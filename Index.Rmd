@@ -1,0 +1,498 @@
+---
+title: "Geospatial Resarcher Test, Atlas of Baseline Risk Assessment for Infectious Disease (ABRAID) Team"
+subtitle: "Submitted to Institute for Health Metrics & Evaluation"
+author: "Aishwarya Venkat"
+date: "August 10, 2017"
+output:
+  tufte::tufte_html: default
+  tufte::tufte_handout:
+    citation_package: natbib
+    latex_engine: xelatex
+  tufte::tufte_book:
+    citation_package: natbib
+    latex_engine: xelatex
+link-citations: yes
+
+---
+
+```{r setup, include=F, message=F, warning=F}
+
+x=c("raster", "rgeos", "sp", "reshape2", "dplyr", "RColorBrewer",
+    "gridExtra", "knitr", "here", "haven", "rgdal", "corrplot", "mgcv",
+    "ggplot2", "tidyr", "grid", "dismo", "rworldmap", "maptools",
+    "randomForest", "tufte")
+
+lapply(x, require, character.only = TRUE)
+
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
+                      strip.white = TRUE, fig.width=16, fig.height=8, dpi=250)
+
+options(scipen=999)
+
+set.seed(500)
+rm(list = ls())
+
+wgs84<-CRS("+proj=longlat +datum=WGS84 +ellps=WGS84 +towgs84=0,0,0");
+
+```
+
+Note: All code used to generate this document can be found [here](https://github.com/aish-venkat/ihme_abraid)
+
+# Data Exploration
+
+```{r datexp1, fig.margin = TRUE, fig.cap = "(top) Number of Cases of Agent X by Year"}
+
+occ<-read.csv("occurrence.csv")
+ggplot(occ)+geom_bar(aes(x=year))
+
+```
+
+We first start by exploring the data provided for this exercise:
+
+* Latitude, Longitude, and Year of Agent X cases
+* Covariates: Enhanced vegetation index, Land surface temperature, Aridity, Urban/rural designation, Population counts 
+
+```{r datexp2, fig.fullwidth = TRUE, fig.width=12, fig.height=2, fig.cap="Provided Covariates"}
+
+occ_pt<- occ %>% subset(occurrence_type=="point")
+occ_pt<-SpatialPointsDataFrame(occ_pt[,1:2], data=occ_pt)
+
+occ_poly<-occ %>% subset(occurrence_type=="polygon") %>% arrange(longitude)
+occ_poly = SpatialPolygons(list(Polygons(list(Polygon(occ_poly[,1:2])), 1)))
+projection(occ_poly)<-wgs84
+
+world<-getMap(); sa<-subset(world, continent=="South America")
+occ_poly<-crop(occ_poly, sa)
+
+covs<-stack()
+for(j in 1:5){ 
+  covs<-addLayer(covs, raster("covariate_brick.tif", band=j))
+}
+covs<-trim(covs)
+
+projection(covs)<-wgs84
+names(covs)<-c("EVI", "LST", "Aridity", "Rural-Urban", "Population")
+
+par(oma=c(0,0,0,0), mar=c(0,0,0,0))
+plot(covs, nr=1, legend=F, axes=FALSE, box=FALSE, asp=1); 
+
+```
+
+```{r corrplot, fig.margin = TRUE, fig.cap = "(top) Correlation plot of Provided Covariates", fig.width=6}
+
+ras_dat<-data.frame(raster::extract(covs, occ_pt))
+corrplot(cor(ras_dat), method="circle")
+
+```
+
+```{r datexp3, fig.cap = "(left) Location of Agent X cases"}
+
+par(oma=c(0,0,0,0), mar=c(0,0,0,0))
+plot(covs[[1]], legend=F, axes=FALSE, box=FALSE, asp=1); 
+plot(occ_poly, add=T, lwd=2, col=rgb(0,0,1,alpha=0.3));
+plot(occ_pt, add=T, pch=18, cex=1, col="red");
+
+```
+
+# Question 1
+
+<b><i>Briefly describe what analytical methods could be used to determine whether Agent X is likely to be present or not for the entire region of interest. Note that the region extent is defined by the covariate data layers</i></b>
+
+```{r suit1, fig.margin = TRUE, fig.width=6}
+
+mins<-apply(ras_dat,2,min); maxs<-apply(ras_dat,2,max);
+cov_c<-covs
+for(j in 1:5){
+  cov_c[[j]][(cov_c[[j]]<mins[j] | cov_c[[j]]>maxs[j])] <- 0 }
+
+# Reclassify values to 0,1
+m <- matrix(c(0.000000000000001, max(cellStats(cov_c, "max")), 1), 
+            ncol=1, byrow=T)
+covs_rc<-raster::reclassify(cov_c[[c(1,2,3,5)]], m)
+covs_rc<-addLayer(covs_rc, covs[[4]])
+
+## Extract layers that meet all criteria
+suit<-sum(covs_rc)
+# rpal <- brewer.pal(n = 5, name = "Reds")
+# par(oma=c(0,0,0,0), mar=c(0,0,0,0))
+# plot(suit, col = rpal, legend=FALSE, axes=FALSE, box=FALSE)
+
+maxsuit<-suit; maxsuit[maxsuit<5]<-0;
+# par(oma=c(0,0,0,0), mar=c(0,0,0,0))
+# plot(maxsuit, col = c("grey", "red"), legend=FALSE, axes=FALSE, box=FALSE)
+
+## Zoom into location with known cases
+par(oma=c(0,0,0,0), mar=c(0,0,0,0))
+plot(maxsuit, col = c("grey", "red"), legend=FALSE, axes=FALSE, box=FALSE, 
+     ext=raster::union(extent(occ_pt), extent(occ_poly)))
+plot(occ_poly, add=T, lwd=6, col=rgb(0,0,1,alpha=0.25));
+plot(occ_pt, add=T, pch=18, cex=3, col="blue");
+
+```
+
+- The simplest approach would be to see which covariate properties align with known locations of occurrence of Agent X. The ranges of these values can be used to develop a "suitability" map of conditions for Agent X. This approach was conducted as part of the data exploration phase, and results from this approach are shown below.
+
+```{r suit3, fig.fullwidth = TRUE, fig.cap = "Suitable Locations per at least Four Covariates", fig.height=10, fig.width=12}
+
+smaxsuit<-suit; smaxsuit[smaxsuit<4]<-0;
+plot(smaxsuit, col = c("grey", "red"), legend=FALSE, axes=FALSE, box=FALSE)
+
+par(oma=c(0,0,0,0), mar=c(0,0,0,0))
+plot(smaxsuit, col = c("grey", "red"), legend=FALSE, axes=FALSE,
+     box=FALSE, ext=raster::union(extent(occ_pt), extent(occ_poly)))
+plot(occ_poly, add=T, lwd=2, col=rgb(0,0,1,alpha=0.3));
+plot(occ_pt, add=T, pch=18, cex=2, col="blue");
+
+```
+
+- A slightly more robust approach involves characterizing the "background" environment, or generating pseudo-absence data to account for the fact that we only have data at some locations. This approach is detailed as a response to Question 2.
+
+- If a wide variety of covariates were present, a geographically weighted regression or principal components analysis could also be used to narrow down key drivers, and develop logistic regression models to assess potential extent of Agent X.
+
+# Question 2
+
+<b><i>Demonstrate one application of the methods outlined in Question 1 using reproducible code. Please plot your results as a map across the geographic area outlined by the covariate brick. Why did you choose this method over any of the others? What assumptions have you made (if any) concerning the data?</i></b>
+
+```{r ps_bg_test, fig.fullwidth = TRUE, fig.height=4, fig.cap = "(left) Random Background and (right) Restricted Background samples"}
+
+mask<-cov_c$EVI
+
+mex<-subset(world, NAME=="Mexico")
+
+# Generate random "background points" using two approaches:
+
+# One approach involves randomly sampling throughout the spatial extent.
+# We purposefully exclude regions with known occurrence points
+
+bg_1 <- SpatialPoints(randomPoints(mask, 500, p=occ_pt), proj4string = wgs84)
+
+# Second approach involves sampling within a radius of known occurrence points
+# We do this because we know Agent X is most likely to spread to points
+# closest to known occurrence points. We set an arbitrary radius of 100 km.
+
+buff <- polygons(circles(occ_pt, d=100000, lonlat=TRUE))
+buff<-crop(buff, mex)
+bg_2 <- spsample(buff, 250, type='random', iter=25)
+
+par(mfrow=c(1,2), oma=c(0,0,0,0), mar=c(0,0,0,0))
+
+plot(!is.na(mask), legend=FALSE, axes=FALSE, box=FALSE, main=NULL)
+plot(bg_1, pch=18, cex=1, col="red", add=T)
+
+plot(!is.na(mask), legend=FALSE, axes=FALSE, box=FALSE, main=NULL)
+plot(bg_2, pch=18, cex=1, col="red", add=T)
+
+```
+
+I chose the background method to investigate over the others, primarily because a robust understanding of species distribution requires an understanding of locations where Agent X may be absent. I also chose not to work with pseudoabsences, since we don't have a good understanding of where Agent X <i>does not</i> occur. The background method instead deals with understanding differences in the environment, which is a safer approach, and involves fewer assumptions, given limited data.
+
+In order to develop background points, I tested two approaches--random sampling within the study area, and restricted sampling within a 100 km radius of observation points. I chose to test these two methods because I read that the size of the background can significantly affect prediction results (Barbet-Massin, 2012; VanDerWal, 2009).
+
+```{r simplefit, fig.fullwidth = TRUE, fig.height=8, fig.cap = "Evaluation of Background Fits<br>(top) Random Background<br>(bottom) Restricted Background"}
+
+## Merge presence/absence data into one df
+
+occ_pt@data$pres<-1; occ_pt@data[,1:4]<-NULL;
+
+bg_1<-SpatialPointsDataFrame(bg_1@coords, 
+              data.frame(pres=rep(0, nrow(bg_1@coords))))
+
+bg_2<-SpatialPointsDataFrame(bg_2@coords, 
+              data.frame(pres=rep(0, nrow(bg_2@coords))))
+
+## Extract raster data to all pts
+
+pts<-do.call('rbind', list(occ_pt, bg_1, bg_2))
+pts@data<-cbind(pts@data, raster::extract(covs, pts))
+
+df<-pts@data; df<- df %>% subset(!is.na(df)); df$pres<-as.factor(df$pres);
+fit<-glm(pres ~ ., data=df, family="binomial")
+
+#summary(fit)
+
+e1<-evaluate(p=occ_pt, a=bg_1, model=fit, x=covs)
+e2<-evaluate(p=occ_pt, a=bg_2, model=fit, x=covs)
+
+par(mfrow=c(2, 3), oma=c(1,1,1,1), mar=c(2,2,2,2))
+density(e1); boxplot(e1, col=c('blue', 'red')); plot(e1, 'ROC'); 
+density(e2); boxplot(e2, col=c('green', 'red')); plot(e2, 'ROC');
+
+```
+
+This tells us that the first subset (Random Background) offers a distinct set of distributions between presence and absence data points, with a high Area Under Curve (AUC) value, indicating stronger discriminating power. We will use the Random Background method for the next steps.
+
+## K-fold Partitioning 
+
+In order to cross-validate the model, I split the dataset into testing and training datasets, sub-sampled into presence and absence datasets. For this example, I use K-Fold Partitioning with 5 groups. I also correct for spatial sorting bias, "the difference between two point data sets in the average distance to the nearest point in a reference dataset" (Hijmans, 2009) 
+
+```{r test_train, fig.fullwidth = TRUE, fig.height=8, fig.cap="K-Fold Partitioning with Random Background Samples<br></br><font color='yellow'> * </font> : Training, Absence<br> <font color='black'> * </font> : Testing, Absence<br> <font color='green'> + </font> : Training, Presence<br> <font color='blue'> + </font> : Testing, Presence"}
+
+pts<-do.call('rbind', list(occ_pt, bg_1))
+pts@data<-cbind(pts@data, raster::extract(covs, pts))
+
+# Separate presence & absence data
+occ_pt@data<-cbind(occ_pt@data, data.frame(raster::extract(covs,
+                                                           occ_pt@coords)))
+occ_pt@data$group <- kfold(occ_pt, 5)
+pres_train <- subset(occ_pt, group != 1); 
+pres_test <- subset(occ_pt, group == 1);
+
+# Generate background data
+backg <- randomPoints(covs, n=1000, mask=covs[[1]])
+backg<-SpatialPoints(backg)
+backg<-SpatialPointsDataFrame(backg@coords,
+              data=data.frame(raster::extract(covs, backg@coords)))
+
+backg$group <- kfold(backg, 5)
+backg_train <- subset(backg, group != 1);
+backg_test <- subset(backg, group == 1);
+
+r = raster(covs, 1)
+ext=extent(-110, -85, 14.5, 25)
+
+plot(!is.na(r), col=c('white', 'light grey'), legend=FALSE, box=FALSE, axes=FALSE)
+points(backg_train, pch='*', cex=2.5, col='yellow')
+points(backg_test, pch='*', cex=2.5, col='black')
+points(pres_train, pch= '+', cex=2.5,col='green')
+points(pres_test, pch='+', cex=2.5, col='blue')
+
+sb <- ssb(pres_test, backg_test, pres_train, lonlat=T)
+sb_1<-sb[,1]/sb[,2]
+
+## Values are close enough to 0, evidence for spatial sorting bias
+
+i <- pwdSample(pres_test, backg_test, pres_train, n=1, tr=0.1)
+pres_test_pwd <- pres_test[!is.na(i[,1]), ]
+backg_test_pwd <- backg_test[na.omit(as.vector(i)), ]
+sb2 <- ssb(pres_test_pwd, backg_test_pwd, pres_train, lonlat=T)
+sb_2<-sb2[1]/ sb2[2]
+
+## SSB value ~1, so spatial sorting bias is no longer an issue
+
+```
+
+## Modeling
+
+To model the probability surface based on covariates, I develop a prediction averaged across four models:
+
+1. Generalized Linear Model (GLM): chosen for simplicity 
+2. Random Forest (RF): chosen for balance of bias and variance across variables
+3. Bioclim (BC): chosen due to built-in 'suitability' selector; "[BC method] compares the values of environmental variables at any location to a percentile distribution of the values at known locations of occurrence ('training sites') (Hijmans & Elith, 2017)
+4. Mahalonobis (MH): chosen for accounting of correlations, and independence of measurement scale
+
+<b> GLM </b>
+
+```{r glm, fig.fullwidth = TRUE, fig.cap="(left) GLM Model, Raw Values <br>(right) GLM Model Prediction, Presence/Absence"}
+
+# logistic regression:
+glm <- glm(pres ~ EVI+LST+Aridity+Population, family = binomial,
+            data=pres_train@data)
+
+glm_e<-evaluate(pres_test, backg_test, glm)
+
+pg <- predict(covs, glm)
+
+par(mfrow=c(1,2), oma=c(0,0,0,0), mar=c(1,1,1,1))
+plot(pg, main=NULL, legend=FALSE, axes=FALSE, box=FALSE)
+
+tr <- threshold(glm_e, 'spec_sens')
+plot(pg > tr, main=NULL, legend=FALSE, axes=FALSE, box=FALSE)
+points(pres_train, pch='*', cex=1, col="green")
+points(backg_train, pch='*', cex=1, col="red")
+
+```
+
+<b> Random Forest </b>
+
+```{r rf, fig.fullwidth = TRUE, fig.cap="(left) Random Forest Model, Raw Values <br>(right) Random Forest Model Prediction, Presence/Absence"}
+
+occ_pt2<-occ_pt; occ_pt2@data<-data.frame(pres=occ_pt2$pres); 
+pts<-do.call('rbind', list(occ_pt2, bg_1))
+pts@data<-cbind(pts@data, raster::extract(covs, pts))
+
+df<-cbind(pts@data, coordinates(pts))
+
+# 75% training data
+samp <- sample(nrow(df), round(0.75 * nrow(df)))
+traindata <- df[samp,]
+pres_train<-traindata[traindata$pres==1,]
+backg_train<-traindata[traindata$pres==0,]
+
+# 25% testing data
+testdata <- df[-samp,]
+pres_test<-testdata[testdata$pres==1,]
+backg_test<-testdata[testdata$pres==0,]
+
+
+rf1 <- randomForest(pres ~ EVI+LST+Aridity+Population,
+                    data=traindata)
+rf2 <- randomForest(factor(pres) ~ EVI+LST+Aridity+Population, 
+                    data=traindata)
+
+erf1 <- evaluate(pres_test, backg_test, rf1)
+erf2 <- evaluate(pres_test, backg_test, rf2)
+
+pr <- predict(covs, rf1)
+
+par(mfrow=c(1,2), oma=c(0,0,0,0), mar=c(1,1,1,1))
+plot(pr, main=NULL, legend=FALSE, axes=FALSE, box=FALSE)
+tr <- threshold(erf1, 'spec_sens')
+plot(pr > tr, main=NULL, legend=FALSE, axes=FALSE, box=FALSE)
+points(pres_train, pch='*', cex=2, col="blue")
+points(backg_train, pch='*', cex=2, col="red")
+
+```
+
+<b> Bioclim </b>
+
+```{r bioclim, fig.fullwidth = TRUE, fig.width=16, fig.cap="(left) Bioclim Model, Raw Values <br>(right) Bioclim Model Prediction, Presence/Absence"}
+
+bc <- bioclim(covs, occ_pt)
+e_reg<-evaluate(bc, p=pres_test[,7:8], a=backg_test[,7:8], x=covs)
+e_pwd<-evaluate(bc, p=pres_test_pwd, a=backg_test_pwd, x=covs)
+
+tr <- threshold(e_pwd, 'spec_sens')
+
+bc <- predict(covs, bc)
+
+par(mfrow=c(1,2), oma=c(0,0,0,0), mar=c(1,1,1,1))
+plot(bc, main=NULL, legend=FALSE, axes=FALSE, box=FALSE)
+plot(bc > tr, main=NULL, legend=FALSE, axes=FALSE, box=FALSE)
+points(traindata, pch='*', cex=2, col="green")
+
+```
+
+```{r bioclim2, fig.width=8, fig.height=4, fig.cap="Bioclim Model Evaluation<br>(left) Regular<br>(right) Spatial Sorting Bias Corrected"}
+
+par(mfrow=c(1,2), oma=c(0,0,0,0), mar=c(1,1,1,1))
+plot(e_reg, 'ROC'); plot(e_pwd, 'ROC')
+
+```
+
+<b> Mahalanobis distance </b>
+
+```{r mahal, fig.fullwidth = TRUE, fig.height=8, fig.width=16, fig.cap="(left) Mahalanobis Distance Model, Raw Values <br>(right) Mahalanobis Distance Model Prediction, Presence/Absence"}
+
+covs2<-dropLayer(covs, 'Rural.Urban')
+mm <- mahal(covs2, SpatialPoints(pres_train[,7:8]))
+e_mm <- evaluate(pres_test[,7:8], backg_test[,7:8], mm, covs2)
+
+pm = predict(covs2, mm)
+
+par(mfrow=c(1,2), oma=c(0,0,0,0), mar=c(1,1,1,1))
+pm[pm < -10] <- -10
+plot(pm, main=NULL, legend=FALSE, axes=FALSE, box=FALSE)
+tr <- threshold(e_mm, 'spec_sens')
+plot(pm > tr, main=NULL, legend=FALSE, axes=FALSE, box=FALSE)
+points(pres_train, pch='+')
+
+```
+
+# Question 3
+
+<b><i>Summarize the key results. How valid are your predictions? How appropriate is the assessment across the entire region?</i></b>
+
+## Combining model results
+
+```{r res_3, fig.fullwidth = TRUE}
+
+par(mfrow=c(2,2), oma=c(1,1,1,1), mar=c(1,1,1,1))
+plot(glm_e, 'ROC'); plot(erf1, 'ROC'); plot(e_pwd, 'ROC'); plot(e_mm, 'ROC')
+
+```
+
+```{r res_1, fig.fullwidth = TRUE}
+
+models <- stack(pg, pr, bc, pm)
+names(models) <- c("GLM", "Random Forest", "Bioclim", "Mahalanobis")
+
+par(mfrow=c(2,2), oma=c(1,1,1,1), mar=c(1,1,1,1))
+plot(models)
+
+```
+
+These models provide us a range of expected areas of spread, but the Random Forest, Bioclim, and Mahalanobis models all provide a similar trend: areas closer to the coast are more likely to be affected by Agent X. The model evaluation indicates that the GLM model is not a better fit than randomness, so we exclude that from our analysis. 
+
+The final model is a combination of the Random Forest, Bioclim, and Mahalanobis models. Instead of a simple mean of predicted model results, we develop a weighted mean of predicted surfaces to give more weight to higher AUC models. 
+
+```{r res_4, fig.fullwidth = TRUE, fig.height=8, fig.cap="Weighted Mean of Predicted Models"}
+
+models <- stack(pr, bc, pm)
+auc <- sapply(list(erf1, e_pwd, e_mm), function(x) x@auc)
+w <- (auc-0.5)^2
+m2 <- weighted.mean(models, w)
+
+par(oma=c(0,0,0,0), mar=c(0,0,0,0))
+plot(m2, main=NULL, legend=TRUE, axes=FALSE, box=FALSE)
+points(occ_pt, add=T, pch=18, col="red", cex=3)
+
+```
+
+Given the strong geographic clustering of Agent X observations in Yucatan, Mexico, my model predictions are most valid for the Eastern coast of Mexico. The Western coast and Northern inland parts of the study extent may be subject to slightly different environmental drivers which may affect our predictions. Model AUCs are generally over 75%, indicating that these models are generally a good fit for the data. 
+
+# Question 4
+
+<b><i>What additional information would you need to improve your estimates? (For example, discuss the quality of the existing data and/or identify what other fields could be added to the input dataset or covariate brick). How could field epidemiologists or Ministries of Health assist with this?</i></b>
+
+The resolution of available data was excellent, but additional covariate data would definitely improve the quality of our models. Environmental covariates such as temperature, precipitation, land use, etc. would help us further understand environmental drivers, potentially at a higher resolution. The binary nature of the Rural/Urban covariate is especially limiting; a land use raster would be much more useful to characterize extent of potential spread. Also given Agent X's predicted occurrence near the coast, we have reason to suspect that sea surface temperature or precipitation might influence its behavior. As a quick test:
+
+```{r prec, fig.fullwidth = TRUE, fig.height=4, fig.cap="(left) Random Forest model result after adding Precipitation covariate<br>(middle) Random Forest AUC before addition of Precipitation layer<br>(right) Random Forest AUC after addition of Precipitation layer"}
+
+prec<-raster::getData('worldclim', var='prec', res=2.5)
+prec<-crop(prec, extent(covs))
+prec<-mean(prec)
+
+covs2<-dropLayer(covs, 'Rural.Urban')
+covs2<-addLayer(covs2, prec); names(covs2)[5]<-"Prec"
+
+occ_pt2<-occ_pt; occ_pt2@data<-data.frame(pres=occ_pt2$pres); 
+pts<-do.call('rbind', list(occ_pt2, bg_1))
+pts@data<-cbind(pts@data, raster::extract(covs2, pts))
+
+df<-cbind(pts@data, coordinates(pts))
+
+# 75% training data
+samp <- sample(nrow(df), round(0.75 * nrow(df)))
+traindata <- df[samp,]
+pres_train<-traindata[traindata$pres==1,]
+backg_train<-traindata[traindata$pres==0,]
+
+# 25% testing data
+testdata <- df[-samp,]
+pres_test<-testdata[testdata$pres==1,]
+backg_test<-testdata[testdata$pres==0,]
+
+rf2 <- randomForest(pres ~ EVI+LST+Aridity+Population+Prec,
+                    data=traindata)
+erf2 <- evaluate(pres_test, backg_test, rf1); 
+
+pr <- predict(covs2, rf1)
+
+par(mfrow=c(1,3), mar=c(2,2,2,2))
+tr <- threshold(erf1, 'spec_sens')
+
+plot(pr > tr, main=NULL, legend=FALSE, axes=FALSE, box=FALSE)
+points(pres_train, pch='+')
+points(backg_train, pch='-', cex=0.25)
+
+plot(erf1, 'ROC', box=FALSE);
+plot(erf2, 'ROC', box=FALSE);
+
+```
+
+The AUC of the random forest model is improved by adding mean annual precipitation as a covariate. Therefore, better covariate data would help us further narrow down the preferred environments for Agent X.
+
+Field epidemiologists and Ministries of Health can also help provide surveillance information which would be beneficial to this analysis. Field reports about the conditions in which Agent X was contracted and spread can be immensely beneficial in characterizing pathogen properties and human susceptibilities. Field epidemiologists can provide valuable information about transmission pathways, local environments and susceptibilities, which we can further quantify and develop models.  
+
+The Ministries of Health can also assist modeling by providing higher-resolution data. I was unable to investigate seasonality in this analysis due to only the Year being reported. While this is useful, information such as month or week would help us understand the seasonality of Agent X, and calibrate model covariates accordingly. It can also help target intervention and prevention strategies through increased biosecurity in target regions during some key durations.
+
+
+# References
+
+* Hijmans RJ and Elith J (2017). [Species distribution modeling with R](https://cran.r-project.org/web/packages/dismo/vignettes/sdm.pdf)
+* Hijmans, R.J, Phillips, S., Leathwick, J. and Elith, J. (2011), Package 'dismo'. Available online at: http://cran.r-project.org/web/packages/dismo/index.html.
+* Naimi B and Araujo MB (2016). "[sdm: a reproducible and extensible R platform for species distribution modelling](https://cran.r-project.org/web/packages/sdm/index.html)." Ecography, 39, pp. 368-375. doi: 10.1111/ecog.01881.
+* Barbet-Massin, Morgane, et al. "[Selecting pseudo-absences for species distribution models: how, where and how many?](http://onlinelibrary.wiley.com/doi/10.1111/j.2041-210X.2011.00172.x/pdf)." Methods in Ecology and Evolution 3.2 (2012): 327-338.
+* VanDerWal, Jeremy, et al. "[Selecting pseudo-absence data for presence-only distribution modeling: how far should you stray from what you know?](http://natelab.uga.edu/FANR8400/VanDerWal_etal%202009_selecting%20background%20points.pdf)." ecological modelling 220.4 (2009): 589-594.
+* Hijmans, Robert J. "[Cross-validation of species distribution models: removing spatial sorting bias and calibration with a null model](http://onlinelibrary.wiley.com/doi/10.1890/11-0826.1/full)." Ecology 93.3 (2012): 679-688.
+* Hanberry, Brice B., Hong S. He, and Brian J. Palik. "[Pseudoabsence generation strategies for species distribution models](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3432107/)." PloS one 7.8 (2012): e44486.
