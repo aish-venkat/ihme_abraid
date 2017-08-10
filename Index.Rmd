@@ -482,7 +482,7 @@ plot(erf2, 'ROC', box=FALSE);
 
 The AUC of the random forest model is improved by adding mean annual precipitation as a covariate. Therefore, better covariate data would help us further narrow down the preferred environments for Agent X.
 
-Field epidemiologists and Ministries of Health can also help provide surveillance information which would be beneficial to this analysis. Field reports about the conditions in which Agent X was contracted and spread can be immensely beneficial in characterizing pathogen properties and human susceptibilities. Field epidemiologists can provide valuable information about transmission pathways, local environments and susceptibilities, which we can further quantify and develop models.  
+Field epidemiologists and Ministries of Health can also help provide surveillance information which would be beneficial to this analysis. Field reports about the conditions in which Agent X was contracted and spread can be immensely beneficial in characterizing pathogen properties and human susceptibilities. Field epidemiologists can provide valuable information about transmission pathways, local environments and behaviors, which we can use to further quantify and develop models.  
 
 The Ministries of Health can also assist modeling by providing higher-resolution data. I was unable to investigate seasonality in this analysis due to only the Year being reported. While this is useful, information such as month or week would help us understand the seasonality of Agent X, and calibrate model covariates accordingly. It can also help target intervention and prevention strategies through increased biosecurity in target regions during some key durations.
 
